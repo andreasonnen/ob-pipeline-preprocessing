@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 
 """
-CLI utility to convert gzipped FCS data into CSV with optional column relabeling.
+CLI utility to convert gzipped FCS data into gzipped CSV outputs with optional column relabeling.
 
 Args:
     --data.raw      Path to a gz-compressed FCS file.
     --data.labels   Path to a gz-compressed labels file.
-    --output_dir    Directory where the CSV will be written.
-    --name          Dataset name used for the output filename.
+    --output_dir    Directory where the matrix/label CSV files will be written.
+    --name          Dataset name used for the output filenames.
 """
 
 import argparse
@@ -170,12 +170,12 @@ def main(argv: Iterable[str] = None):
     features_df, labels = split_features_and_labels(data_df)
 
     os.makedirs(output_dir, exist_ok=True)
-    data_output_path = os.path.join(output_dir, f"{name}.csv")
-    features_df.to_csv(data_output_path, index=False)
+    data_output_path = os.path.join(output_dir, f"{name}.matrix.gz")
+    features_df.to_csv(data_output_path, index=False, compression="gzip")
 
     if labels is not None:
-        label_output_path = os.path.join(output_dir, f"{name}_labels.txt")
-        labels.to_csv(label_output_path, index=False, header=False)
+        label_output_path = os.path.join(output_dir, f"{name}.true_labels.gz")
+        labels.to_csv(label_output_path, index=False, header=False, compression="gzip")
 
 
 if __name__ == "__main__":
