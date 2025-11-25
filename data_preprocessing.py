@@ -17,17 +17,26 @@ import sys
 import fcsparser
 import tempfile
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 
-def read_gzip_bytes(path: str) -> bytes:
-    """Return the raw bytes stored inside a gzip-compressed file."""
-    with gzip.open(path, "rb") as fh:
-        return fh.read()
+def read_bytes_handling_gzip(path: str) -> bytes:
+    """
+    Return file contents, transparently handling gzip-compressed files.
+
+    Some inputs may have a .gz suffix even when they are plain text; fall back to
+    normal reads if gzip decompression fails.
+    """
+    try:
+        with gzip.open(path, "rb") as fh:
+            return fh.read()
+    except (OSError, gzip.BadGzipFile):
+        with open(path, "rb") as fh:
+            return fh.read()
 
 
 def parse_fcs_to_dataframe(raw_gz_path: str):
-    data_bytes = read_gzip_bytes(raw_gz_path)
+    data_bytes = read_bytes_handling_gzip(raw_gz_path)
 
     # fcsparser.parse expects a file path; use a temporary file to avoid keeping data on disk.
     with tempfile.NamedTemporaryFile(suffix=".fcs", delete=False) as tmp:
@@ -75,7 +84,7 @@ def detect_label_format(label_path: str, label_text: str) -> str:
 def apply_labels(label_gz_path: str, df):
     """Apply labels to DataFrame columns according to the provided rules."""
     try:
-        label_text = read_gzip_bytes(label_gz_path).decode("utf-8")
+        label_text = read_bytes_handling_gzip(label_gz_path).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ValueError("Unexpected label file format: unable to decode as UTF-8 text.") from exc
 
@@ -89,9 +98,33 @@ def apply_labels(label_gz_path: str, df):
     if label_format != "txt":
         raise ValueError("Unexpected label file format.")
 
-    labels = parse_label_lines(label_text, expected_count=df.shape[1], source=label_gz_path)
+    try:
+        labels = parse_label_lines(label_text, expected_count=df.shape[1], source=label_gz_path)
+    except ValueError as exc:
+        print(
+            f"Warning: {exc} Column relabeling skipped; keeping original headers.",
+            file=sys.stderr,
+        )
+        return df
     df.columns = labels
     return df
+
+
+def split_features_and_labels(df) -> Tuple:
+    """
+    Split the loaded dataframe into features and labels if a label column exists.
+
+    The column named 'label' (case-insensitive) is treated as the target vector.
+    Returns (features_df, labels_series_or_None).
+    """
+    label_col = next((c for c in df.columns if c.lower() == "label"), None)
+    if label_col is None:
+        print("Warning: no label column found; writing all data as features.", file=sys.stderr)
+        return df, None
+
+    labels = df[label_col]
+    features = df.drop(columns=[label_col])
+    return features, labels
 
 
 def parse_args() -> argparse.ArgumentParser:
@@ -134,10 +167,15 @@ def main(argv: Iterable[str] = None):
 
     data_df = parse_fcs_to_dataframe(raw_path)
     data_df = apply_labels(label_path, data_df)
+    features_df, labels = split_features_and_labels(data_df)
 
     os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, f"{name}.csv")
-    data_df.to_csv(output_path, index=False)
+    data_output_path = os.path.join(output_dir, f"{name}.csv")
+    features_df.to_csv(data_output_path, index=False)
+
+    if labels is not None:
+        label_output_path = os.path.join(output_dir, f"{name}_labels.txt")
+        labels.to_csv(label_output_path, index=False, header=False)
 
 
 if __name__ == "__main__":
