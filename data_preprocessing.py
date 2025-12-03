@@ -136,7 +136,7 @@ def split_features_and_labels(df) -> Tuple:
 
 def create_train_test_split(features_df, labels, train_frac=0.7, random_seed=42):
     """
-    Create stratified train/test split.
+    Create stratified train/test split, removing unassigned cells first.
     
     Returns:
         train_features, test_features, train_labels, test_labels
@@ -145,8 +145,11 @@ def create_train_test_split(features_df, labels, train_frac=0.7, random_seed=42)
         print("Warning: No labels found, cannot create stratified split.", file=sys.stderr)
         return features_df, None, labels, None
     
-    # Remove unassigned cells for stratification
-    assigned_mask = labels != "unassigned"
+    # Remove unassigned cells (empty strings, NaN, or "unassigned")
+    # Convert to string and strip whitespace to catch all empty variants
+    labels_str = labels.astype(str).str.strip()
+    assigned_mask = (labels_str != "") & (labels_str != "unassigned") & (labels.notna())
+    
     features_assigned = features_df[assigned_mask]
     labels_assigned = labels[assigned_mask]
     
@@ -155,12 +158,12 @@ def create_train_test_split(features_df, labels, train_frac=0.7, random_seed=42)
     print(f"{'='*70}", file=sys.stderr)
     print(f"Total cells: {len(features_df)}", file=sys.stderr)
     print(f"Assigned cells: {len(features_assigned)}", file=sys.stderr)
-    print(f"Unassigned cells: {sum(~assigned_mask)}", file=sys.stderr)
+    print(f"Unassigned cells (removed): {sum(~assigned_mask)}", file=sys.stderr)
     print(f"Unique cell types: {len(labels_assigned.unique())}", file=sys.stderr)
     print(f"\nCell type distribution:", file=sys.stderr)
     print(labels_assigned.value_counts().to_string(), file=sys.stderr)
     
-    # Stratified split
+    # Stratified split on assigned cells only
     try:
         X_train, X_test, y_train, y_test = train_test_split(
             features_assigned,
