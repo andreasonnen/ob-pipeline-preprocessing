@@ -3,11 +3,15 @@
 """
 CLI utility to convert gzipped FCS data into gzipped CSV outputs with optional column relabeling.
 
+NOW WITH TRAIN/TEST SPLIT (70/30 stratified)
+
 Args:
     --data.raw      Path to a gz-compressed FCS file.
     --data.labels   Path to a gz-compressed labels file.
     --output_dir    Directory where the matrix/label CSV files will be written.
     --name          Dataset name used for the output filenames.
+    --train_frac    Fraction of data to use for training (default: 0.7)
+    --random_seed   Random seed for reproducible splits (default: 42)
 """
 
 import argparse
@@ -16,8 +20,11 @@ import os
 import sys
 import fcsparser
 import tempfile
+import pandas as pd
+import numpy as np
 from pathlib import Path
 from typing import Iterable, List, Tuple
+from sklearn.model_selection import train_test_split
 
 
 def read_bytes_handling_gzip(path: str) -> bytes:
@@ -127,8 +134,63 @@ def split_features_and_labels(df) -> Tuple:
     return features, labels
 
 
+def create_train_test_split(features_df, labels, train_frac=0.7, random_seed=42):
+    """
+    Create stratified train/test split.
+    
+    Returns:
+        train_features, test_features, train_labels, test_labels
+    """
+    if labels is None:
+        print("Warning: No labels found, cannot create stratified split.", file=sys.stderr)
+        return features_df, None, labels, None
+    
+    # Remove unassigned cells for stratification
+    assigned_mask = labels != "unassigned"
+    features_assigned = features_df[assigned_mask]
+    labels_assigned = labels[assigned_mask]
+    
+    print(f"\n{'='*70}", file=sys.stderr)
+    print("TRAIN/TEST SPLIT", file=sys.stderr)
+    print(f"{'='*70}", file=sys.stderr)
+    print(f"Total cells: {len(features_df)}", file=sys.stderr)
+    print(f"Assigned cells: {len(features_assigned)}", file=sys.stderr)
+    print(f"Unassigned cells: {sum(~assigned_mask)}", file=sys.stderr)
+    print(f"Unique cell types: {len(labels_assigned.unique())}", file=sys.stderr)
+    print(f"\nCell type distribution:", file=sys.stderr)
+    print(labels_assigned.value_counts().to_string(), file=sys.stderr)
+    
+    # Stratified split
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            features_assigned,
+            labels_assigned,
+            test_size=(1 - train_frac),
+            random_state=random_seed,
+            stratify=labels_assigned
+        )
+        
+        print(f"\n✓ Split created successfully:", file=sys.stderr)
+        print(f"  Training: {len(X_train)} cells ({100*train_frac:.1f}%)", file=sys.stderr)
+        print(f"  Test: {len(X_test)} cells ({100*(1-train_frac):.1f}%)", file=sys.stderr)
+        print(f"{'='*70}\n", file=sys.stderr)
+        
+        return X_train, X_test, y_train, y_test
+        
+    except ValueError as e:
+        print(f"Warning: Stratified split failed ({e}). Using random split without stratification.", file=sys.stderr)
+        X_train, X_test, y_train, y_test = train_test_split(
+            features_assigned,
+            labels_assigned,
+            test_size=(1 - train_frac),
+            random_state=random_seed,
+            stratify=None
+        )
+        return X_train, X_test, y_train, y_test
+
+
 def parse_args() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Preprocess gzipped FCS data into CSV.")
+    parser = argparse.ArgumentParser(description="Preprocess gzipped FCS data into CSV with train/test split.")
     parser.add_argument(
         "--data.raw",
         type=str,
@@ -145,13 +207,25 @@ def parse_args() -> argparse.ArgumentParser:
         "--output_dir",
         type=str,
         required=True,
-        help="Directory to write the resulting CSV file.",
+        help="Directory to write the resulting CSV files.",
     )
     parser.add_argument(
         "--name",
         type=str,
         default="dataset",
         help="Dataset name used for output filename.",
+    )
+    parser.add_argument(
+        "--train_frac",
+        type=float,
+        default=0.7,
+        help="Fraction of data to use for training (default: 0.7 = 70%%).",
+    )
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible splits (default: 42).",
     )
     return parser
 
@@ -164,20 +238,50 @@ def main(argv: Iterable[str] = None):
     label_path = getattr(args, "data.labels")
     output_dir = args.output_dir
     name = args.name
+    train_frac = args.train_frac
+    random_seed = args.random_seed
 
+    # Parse FCS and apply labels
     data_df = parse_fcs_to_dataframe(raw_path)
     data_df = apply_labels(label_path, data_df)
     features_df, labels = split_features_and_labels(data_df)
 
     os.makedirs(output_dir, exist_ok=True)
-    data_output_path = os.path.join(output_dir, f"{name}.matrix.gz")
-    features_df.to_csv(data_output_path, index=False, compression="gzip")
 
+    # Create train/test split if labels exist
     if labels is not None:
-        label_output_path = os.path.join(output_dir, f"{name}.true_labels.gz")
-        labels.to_csv(label_output_path, index=False, header=False, compression="gzip")
+        X_train, X_test, y_train, y_test = create_train_test_split(
+            features_df, labels, train_frac, random_seed
+        )
+        
+        # Save TRAINING files
+        train_matrix_path = os.path.join(output_dir, f"{name}_train.matrix.gz")
+        X_train.to_csv(train_matrix_path, index=False, compression="gzip")
+        print(f"✓ Saved training matrix: {train_matrix_path}", file=sys.stderr)
+        
+        train_labels_path = os.path.join(output_dir, f"{name}_train.true_labels.gz")
+        y_train.to_csv(train_labels_path, index=False, header=False, compression="gzip")
+        print(f"✓ Saved training labels: {train_labels_path}", file=sys.stderr)
+        
+        # Save TEST files
+        test_matrix_path = os.path.join(output_dir, f"{name}_test.matrix.gz")
+        X_test.to_csv(test_matrix_path, index=False, compression="gzip")
+        print(f"✓ Saved test matrix: {test_matrix_path}", file=sys.stderr)
+        
+        test_labels_path = os.path.join(output_dir, f"{name}_test.true_labels.gz")
+        y_test.to_csv(test_labels_path, index=False, header=False, compression="gzip")
+        print(f"✓ Saved test labels: {test_labels_path}", file=sys.stderr)
+    
+    # Save FULL dataset (for backward compatibility or reference)
+    full_matrix_path = os.path.join(output_dir, f"{name}.matrix.gz")
+    features_df.to_csv(full_matrix_path, index=False, compression="gzip")
+    print(f"✓ Saved full matrix: {full_matrix_path}", file=sys.stderr)
+    
+    if labels is not None:
+        full_labels_path = os.path.join(output_dir, f"{name}.true_labels.gz")
+        labels.to_csv(full_labels_path, index=False, header=False, compression="gzip")
+        print(f"✓ Saved full labels: {full_labels_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":
     main()
-    
