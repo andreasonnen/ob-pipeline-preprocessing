@@ -142,10 +142,78 @@ def replace_NAs(df):
 def get_unique_samples(df):
     """Get unique sample identifiers from the dataframe."""
     if "sample" not in df.columns:
-        raise ValueError("No 'sample' column found in the data. Cannot perform sample-level split.")
+        return None  # Will trigger cell-level split instead
     
     samples_unique = df["sample"].unique()
     return samples_unique
+
+
+def train_test_cell_split(df, seed=0, train_ratio=0.6):
+    """
+    Split features and labels into train/test subsets at cell level (random cells).
+    
+    WARNING: This does not prevent data leakage if cells from the same sample/patient
+    are related. Use only when sample information is not available.
+    
+    Args:
+        df: DataFrame with cells as rows
+        seed: Random seed for reproducibility
+        train_ratio: Proportion of cells to use for training (0.0 to 1.0)
+    
+    Returns:
+        train_set, test_set: DataFrames
+    """
+    n_cells = len(df)
+    
+    if train_ratio <= 0 or train_ratio >= 1:
+        raise ValueError(f"train_ratio must be between 0 and 1, got {train_ratio}")
+    
+    n_train = int(n_cells * train_ratio)
+    
+    # Ensure we have at least some cells in both sets
+    if n_train < 100 or (n_cells - n_train) < 100:
+        print(
+            f"Warning: Very small train or test set. Train: {n_train}, Test: {n_cells - n_train}",
+            file=sys.stderr,
+        )
+    
+    # Randomly shuffle indices
+    rng = np.random.RandomState(seed)
+    indices = np.arange(n_cells)
+    rng.shuffle(indices)
+    
+    train_indices = indices[:n_train]
+    test_indices = indices[n_train:]
+    
+    # Split the data
+    train_set = df.iloc[train_indices].copy()
+    test_set = df.iloc[test_indices].copy()
+    
+    # Report split statistics
+    print(f"\n=== Cell-Level Split Summary ===", file=sys.stderr)
+    print(f"WARNING: Using cell-level random split (no sample column found)", file=sys.stderr)
+    print(f"Total cells: {n_cells:,}", file=sys.stderr)
+    print(f"Training cells: {n_train:,} ({100*train_ratio:.1f}%)", file=sys.stderr)
+    print(f"Test cells: {n_cells - n_train:,} ({100*(1-train_ratio):.1f}%)", file=sys.stderr)
+    
+    # Check label distribution if labels exist
+    if "label" in df.columns:
+        print(f"\nLabel distribution:", file=sys.stderr)
+        train_labels = train_set["label"].value_counts()
+        test_labels = test_set["label"].value_counts()
+        all_labels = sorted(set(train_labels.index) | set(test_labels.index))
+        
+        for label in all_labels[:10]:  # Show first 10 labels
+            train_count = train_labels.get(label, 0)
+            test_count = test_labels.get(label, 0)
+            print(f"  {label}: train={train_count:,}, test={test_count:,}", file=sys.stderr)
+        
+        if len(all_labels) > 10:
+            print(f"  ... and {len(all_labels) - 10} more labels", file=sys.stderr)
+    
+    print("=" * 35 + "\n", file=sys.stderr)
+    
+    return train_set, test_set
 
 
 def create_label_mapping(df):
@@ -358,13 +426,25 @@ def main(argv: Iterable[str] = None):
     
     # Get unique samples and perform split
     samples_unique = get_unique_samples(data_df)
-    train_set, test_set = train_test_sample_split(
-        data_df, 
-        samples_unique, 
-        seed=seed,
-        train_ratio=train_ratio,
-        min_train_samples=min_train_samples
-    )
+    
+    if samples_unique is not None:
+        # Sample-level split (preferred when sample column exists)
+        train_set, test_set = train_test_sample_split(
+            data_df, 
+            samples_unique, 
+            seed=seed,
+            train_ratio=train_ratio,
+            min_train_samples=min_train_samples
+        )
+    else:
+        # Cell-level split (fallback when no sample column)
+        print(f"\nNo 'sample' column found - using cell-level random split", file=sys.stderr)
+        print(f"WARNING: This may lead to data leakage if cells are related!", file=sys.stderr)
+        train_set, test_set = train_test_cell_split(
+            data_df,
+            seed=seed,
+            train_ratio=train_ratio
+        )
 
     # Split features and labels
     features_train, labels_train = split_features_and_labels(train_set)
@@ -415,4 +495,3 @@ def main(argv: Iterable[str] = None):
 
 if __name__ == "__main__":
     main()
-    
