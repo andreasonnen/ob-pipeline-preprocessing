@@ -405,7 +405,7 @@ def main(argv: Iterable[str] = None):
     
     # Save label mapping for GateMeClass to use
     if label_mapping:
-        mapping_path = os.path.join(output_dir, f"{name}.input_labels.gz")
+        mapping_path = os.path.join(output_dir, f"{name}.label_mapping.gz")
         mapping_df = pd.DataFrame(list(label_mapping.items()), columns=["id", "cell_type"])
         mapping_df.to_csv(mapping_path, index=False, header=False, compression="gzip")
         print(f"Saved label mapping: {mapping_path}", file=sys.stderr)
